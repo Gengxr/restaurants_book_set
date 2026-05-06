@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#f3f1ee" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>老街坊劈柴院房间预定</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>老街坊劈柴院房间预定</h1>
+      <p class="subtitle">选日期与时段，点空闲房间可预订</p>
+    </header>
+
+    <section class="filters">
+      <div class="filter-group">
+        <label for="dateInput">日期</label>
+        <input type="date" id="dateInput" class="date-input" />
+      </div>
+      <div class="filter-group">
+        <span class="filter-label">就餐时段</span>
+        <div class="slot-tabs">
+          <button type="button" class="slot-tab active" data-slot="noon">中午</button>
+          <button type="button" class="slot-tab" data-slot="evening">晚上</button>
+        </div>
+      </div>
+    </section>
+
+    <main class="rooms-grid" id="roomsGrid">
+      <!-- 15 个房间由 JS 动态渲染 -->
+    </main>
+
+    <footer class="footer">
+      <button type="button" class="btn-history" id="btnHistory">历史预定记录</button>
+      <button type="button" class="btn-clear-db" id="btnClearDb">清空数据</button>
+      <div class="legend">
+        <span class="legend-item state-free"><i></i> 空闲</span>
+        <span class="legend-item state-reserved"><i></i> 已预订</span>
+        <span class="legend-item state-dining"><i></i> 就餐中</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- 预定弹窗：填写姓名、手机号 -->
+  <div class="modal-overlay" id="modalOverlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="modalTitle">
+      <h2 class="modal-title" id="modalTitle">预定信息</h2>
+      <p class="modal-room-name" id="modalRoomName"></p>
+      <form id="reserveForm" class="reserve-form">
+        <div class="form-row">
+          <label for="guestName">姓名</label>
+          <input type="text" id="guestName" name="guestName" placeholder="请输入预定人姓名" required />
+        </div>
+        <div class="form-row">
+          <label for="guestPhone">手机号</label>
+          <input type="tel" id="guestPhone" name="guestPhone" placeholder="请输入手机号" required />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-cancel" id="modalCancel">取消</button>
+          <button type="submit" class="btn btn-confirm">确认预订</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 编辑预定人弹窗 -->
+  <div class="modal-overlay" id="editGuestOverlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="editGuestTitle">
+      <h2 class="modal-title" id="editGuestTitle">编辑预定人</h2>
+      <p class="modal-room-name" id="editGuestRoomName"></p>
+      <form id="editGuestForm" class="reserve-form">
+        <div class="form-row">
+          <label for="editGuestName">姓名</label>
+          <input type="text" id="editGuestName" name="guestName" placeholder="请输入预定人姓名" required />
+        </div>
+        <div class="form-row">
+          <label for="editGuestPhone">手机号</label>
+          <input type="tel" id="editGuestPhone" name="guestPhone" placeholder="请输入手机号" required />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-cancel" id="editGuestCancel">取消</button>
+          <button type="submit" class="btn btn-confirm">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 备注弹窗 -->
+  <div class="modal-overlay" id="remarkOverlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="remarkTitle">
+      <h2 class="modal-title" id="remarkTitle">房间备注</h2>
+      <p class="modal-room-name" id="remarkRoomName"></p>
+      <form id="remarkForm" class="reserve-form">
+        <div class="form-row">
+          <label for="remarkInput">备注内容</label>
+          <textarea id="remarkInput" name="remark" rows="4" placeholder="可输入桌号、口味、特殊要求等"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-cancel" id="remarkCancel">取消</button>
+          <button type="submit" class="btn btn-confirm">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 历史预定记录弹窗 -->
+  <div class="modal-overlay" id="historyOverlay" aria-hidden="true">
+    <div class="modal modal-history" role="dialog" aria-labelledby="historyTitle">
+      <h2 class="modal-title" id="historyTitle">历史预定记录</h2>
+      <div class="history-filters">
+        <div class="form-row">
+          <label>开始日期</label>
+          <input type="date" id="historyStartDate" class="date-input" />
+        </div>
+        <div class="form-row">
+          <label>结束日期</label>
+          <input type="date" id="historyEndDate" class="date-input" />
+        </div>
+        <button type="button" class="btn btn-query" id="btnHistoryQuery">查询</button>
+      </div>
+      <div class="history-list-wrap">
+        <ul class="history-list" id="historyList"></ul>
+        <p class="history-empty" id="historyEmpty">暂无记录</p>
+      </div>
+      <button type="button" class="btn btn-close-history" id="btnCloseHistory">关闭</button>
+    </div>
+  </div>
+
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
