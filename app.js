@@ -1,4 +1,3 @@
-// 房间状态
 const STATES = {
   FREE: 'free',
   RESERVED: 'reserved',
@@ -6,455 +5,714 @@ const STATES = {
 };
 
 const STATE_LABELS = {
-  [STATES.FREE]: '空闲',
-  [STATES.RESERVED]: '已预订',
-  [STATES.DINING]: '就餐中'
+  free: '空闲',
+  reserved: '已预订',
+  dining: '就餐中'
 };
 
-// 就餐时段
-const SLOTS = { NOON: 'noon', EVENING: 'evening' };
-const SLOT_LABELS = { [SLOTS.NOON]: '中午', [SLOTS.EVENING]: '晚上' };
+const SLOT_LABELS = {
+  noon: '中午',
+  evening: '晚上'
+};
 
-// 16 个房间
-const ROOM_CONFIG = [
-  { id: 1, name: '步步高升', recommended: 8 },
-  { id: 2, name: '丰衣足食', recommended: 8 },
-  { id: 3, name: '金玉满堂', recommended: 12 },
-  { id: 4, name: '春种秋收', recommended: 8 },
-  { id: 5, name: '五福临门', recommended: 10 },
-  { id: 6, name: '年年有鱼', recommended: 10 },
-  { id: 7, name: '大吉大利', recommended: 4 },
-  { id: 8, name: '田园风光', recommended: 10 },
-  { id: 9, name: '风调雨顺', recommended: 10 },
-  { id: 10, name: '五谷丰登', recommended: 8 },
-  { id: 11, name: '乡里乡亲', recommended: 6 },
-  { id: 12, name: '左邻右舍', recommended: 6 },
-  { id: 13, name: '走亲访友', recommended: 6 },
-  { id: 14, name: '长桌1', recommended: 4 },
-  { id: 15, name: '长桌2', recommended: 4 },
-  { id: 16, name: '长桌3', recommended: 4 },
-  { id: 17, name: '地桌5', recommended: 10 },
-  { id: 18, name: '地桌6', recommended: 10 },
-];
+const ROLE_LABELS = {
+  employee: '员工',
+  boss: '老板',
+  super_admin: '超级管理员'
+};
 
-// 预定数据（内存缓存）：reservations[date][slot][roomId] = { state, guestName?, guestPhone? }
-// 持久化在 IndexedDB，见 db.js
-let reservations = {};
+const ACTION_LABELS = {
+  reserve: '预订',
+  updated: '编辑',
+  dining: '改为就餐中',
+  cancelled: '取消/设为空闲'
+};
 
-function todayStr() {
-  const d = new Date();
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const auth = {
+  token: localStorage.getItem('booking_token') || '',
+  user: JSON.parse(localStorage.getItem('booking_user') || 'null')
+};
+
+const state = {
+  rooms: [],
+  reservations: new Map(),
+  selectedDate: todayStr(),
+  selectedSlot: 'noon',
+  socket: null,
+  online: navigator.onLine,
+  pendingCount: 0
+};
+
+const els = {
+  loginView: document.getElementById('loginView'),
+  appView: document.getElementById('appView'),
+  loginForm: document.getElementById('loginForm'),
+  loginUsername: document.getElementById('loginUsername'),
+  loginPassword: document.getElementById('loginPassword'),
+  loginError: document.getElementById('loginError'),
+  userLine: document.getElementById('userLine'),
+  logoutBtn: document.getElementById('logoutBtn'),
+  syncStrip: document.getElementById('syncStrip'),
+  dateInput: document.getElementById('dateInput'),
+  roomsGrid: document.getElementById('roomsGrid'),
+  managerBar: document.getElementById('managerBar'),
+  usersBtn: document.getElementById('usersBtn'),
+  conflictsBtn: document.getElementById('conflictsBtn'),
+  statsBtn: document.getElementById('statsBtn'),
+  modalOverlay: document.getElementById('modalOverlay'),
+  modalTitle: document.getElementById('modalTitle'),
+  modalBody: document.getElementById('modalBody'),
+  modalClose: document.getElementById('modalClose')
+};
+
+document.addEventListener('DOMContentLoaded', init);
+
+async function init() {
+  els.dateInput.value = state.selectedDate;
+  bindEvents();
+  await window.bookingDb.openBookingCache();
+  await refreshPendingCount();
+  if (!auth.token) {
+    showLogin();
+    return;
+  }
+  try {
+    const result = await api('/api/me');
+    setAuth(auth.token, result.user);
+    await enterApp();
+  } catch (_) {
+    showLogin('登录已过期，请重新登录');
+  }
+}
+
+function bindEvents() {
+  els.loginForm.addEventListener('submit', handleLogin);
+  els.logoutBtn.addEventListener('click', logout);
+  els.dateInput.addEventListener('change', () => {
+    state.selectedDate = els.dateInput.value;
+    loadReservations();
+  });
+  document.querySelectorAll('.segment').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.selectedSlot = button.dataset.slot;
+      document.querySelectorAll('.segment').forEach((item) => item.classList.remove('active'));
+      button.classList.add('active');
+      renderRooms();
+    });
+  });
+  els.modalClose.addEventListener('click', closeModal);
+  els.modalOverlay.addEventListener('click', (event) => {
+    if (event.target === els.modalOverlay) closeModal();
+  });
+  els.usersBtn.addEventListener('click', openUsersModal);
+  els.conflictsBtn.addEventListener('click', openConflictsModal);
+  els.statsBtn.addEventListener('click', openStatsModal);
+  window.addEventListener('online', () => {
+    state.online = true;
+    updateSyncStrip();
+    syncPendingOperations(true);
+  });
+  window.addEventListener('offline', () => {
+    state.online = false;
+    updateSyncStrip();
+  });
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  els.loginError.textContent = '';
+  try {
+    const result = await fetchJson('/api/auth/login', {
+      method: 'POST',
+      body: {
+        username: els.loginUsername.value.trim(),
+        password: els.loginPassword.value
+      }
+    });
+    setAuth(result.token, result.user);
+    els.loginPassword.value = '';
+    await enterApp();
+  } catch (err) {
+    els.loginError.textContent = err.message;
+  }
+}
+
+function setAuth(token, user) {
+  auth.token = token;
+  auth.user = user;
+  localStorage.setItem('booking_token', token);
+  localStorage.setItem('booking_user', JSON.stringify(user));
+}
+
+function showLogin(message = '') {
+  els.appView.hidden = true;
+  els.loginView.hidden = false;
+  els.loginForm.hidden = false;
+  els.loginError.textContent = message;
+}
+
+async function enterApp() {
+  els.loginView.hidden = true;
+  els.appView.hidden = false;
+  els.managerBar.hidden = !canManage();
+  els.userLine.textContent = `${auth.user.displayName} · ${ROLE_LABELS[auth.user.role] || auth.user.role}`;
+  connectSocket();
+  updateSyncStrip();
+  await loadReservations();
+  await syncPendingOperations();
+}
+
+function logout() {
+  localStorage.removeItem('booking_token');
+  localStorage.removeItem('booking_user');
+  auth.token = '';
+  auth.user = null;
+  if (state.socket) state.socket.disconnect();
+  showLogin();
+}
+
+async function loadReservations() {
+  updateSyncStrip('正在读取订桌数据...');
+  try {
+    const result = await api(`/api/reservations?startDate=${state.selectedDate}&endDate=${state.selectedDate}`);
+    state.rooms = result.rooms || state.rooms;
+    setReservations(result.reservations || []);
+    await window.bookingDb.cacheReservations(result.reservations || []);
+    await mergeCachedPending();
+  } catch (_) {
+    const cached = await window.bookingDb.getCachedReservationsByDate(state.selectedDate);
+    setReservations(cached);
+    await mergeCachedPending();
+    updateSyncStrip('离线模式：正在显示本机缓存');
+  }
+  renderRooms();
+  updateSyncStrip();
+}
+
+function setReservations(rows) {
+  rows.forEach((row) => {
+    state.reservations.set(roomKey(row.date, row.slot, row.roomId), row);
+  });
+}
+
+async function mergeCachedPending() {
+  const pending = await window.bookingDb.getPendingOperations();
+  state.pendingCount = pending.length;
+  for (const operation of pending) {
+    if (operation.date === state.selectedDate) {
+      const current = getRoomData(operation.date, operation.slot, operation.roomId);
+      state.reservations.set(roomKey(operation.date, operation.slot, operation.roomId), {
+        ...current,
+        ...operation.patch,
+        date: operation.date,
+        slot: operation.slot,
+        roomId: operation.roomId,
+        version: operation.baseVersion,
+        pending: true
+      });
+    }
+  }
+}
+
+function renderRooms() {
+  els.roomsGrid.innerHTML = '';
+  if (state.rooms.length === 0) {
+    els.roomsGrid.innerHTML = '<p class="empty">暂无房间数据</p>';
+    return;
+  }
+  state.rooms.forEach((room) => {
+    const data = getRoomData(state.selectedDate, state.selectedSlot, room.id);
+    const card = document.createElement('article');
+    card.className = `room-card state-${data.state}${data.pending ? ' pending' : ''}`;
+    card.innerHTML = `
+      <div class="room-title">
+        <strong>${escapeHtml(room.name)}</strong>
+        <span>${STATE_LABELS[data.state]}</span>
+      </div>
+      <div class="room-meta">推荐 ${room.recommended} 人${data.partySize ? ` · 到店 ${data.partySize} 人` : ''}</div>
+      ${data.guestName || data.guestPhone ? `<div class="guest">${escapeHtml(data.guestName || '-')} · ${escapeHtml(data.guestPhone || '-')}</div>` : ''}
+      ${data.hasDeposit ? `<div class="deposit">订金：${money(data.depositAmount)} 元</div>` : ''}
+      ${data.remark ? `<div class="remark">${escapeHtml(data.remark)}</div>` : ''}
+      ${data.pending ? '<div class="pending-tag">待同步</div>' : ''}
+      ${renderActions(data)}
+    `;
+    card.addEventListener('click', (event) => handleRoomTap(event, room, data));
+    els.roomsGrid.appendChild(card);
+  });
+}
+
+function renderActions(data) {
+  if (data.state === STATES.FREE) return '';
+  return `
+    <div class="card-actions">
+      ${data.state === STATES.RESERVED ? '<button type="button" data-action="dining">就餐</button>' : ''}
+      <button type="button" data-action="edit">编辑</button>
+      <button type="button" data-action="free">空闲</button>
+    </div>
+  `;
+}
+
+function handleRoomTap(event, room, data) {
+  const actionButton = event.target.closest('button[data-action]');
+  if (actionButton) {
+    event.stopPropagation();
+    const action = actionButton.dataset.action;
+    if (action === 'dining') {
+      enqueueReservation(room.id, { ...data, state: STATES.DINING });
+      return;
+    }
+    if (action === 'free') {
+      if (confirm(`确定将「${room.name}」设为空闲吗？`)) {
+        enqueueReservation(room.id, { state: STATES.FREE });
+      }
+      return;
+    }
+    if (action === 'edit') {
+      openReservationModal(room, data);
+      return;
+    }
+  }
+  if (data.state === STATES.FREE) {
+    openReservationModal(room, data);
+  }
+}
+
+function openReservationModal(room, data) {
+  const isEdit = data.state !== STATES.FREE;
+  openModal(isEdit ? '编辑订桌' : '新增订桌', `
+    <form id="reservationForm" class="form-stack">
+      <p class="modal-note">${escapeHtml(room.name)} · ${state.selectedDate} ${SLOT_LABELS[state.selectedSlot]}</p>
+      <label>预订人姓名<input name="guestName" value="${escapeAttr(data.guestName || '')}" required /></label>
+      <label>手机号<input name="guestPhone" type="tel" value="${escapeAttr(data.guestPhone || '')}" required /></label>
+      <label>到店人数<input name="partySize" type="number" min="1" max="99" value="${data.partySize || ''}" required /></label>
+      <label class="check-row"><input name="hasDeposit" type="checkbox" ${data.hasDeposit ? 'checked' : ''} /> 有订金</label>
+      <label>订金金额<input name="depositAmount" type="number" min="0" step="0.01" value="${data.depositAmount || ''}" /></label>
+      <label>备注<textarea name="remark" rows="3">${escapeHtml(data.remark || '')}</textarea></label>
+      <button type="submit" class="btn primary">保存</button>
+    </form>
+  `);
+  const form = document.getElementById('reservationForm');
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const formData = new FormData(form);
+    const hasDeposit = formData.get('hasDeposit') === 'on';
+    enqueueReservation(room.id, {
+      state: STATES.RESERVED,
+      guestName: String(formData.get('guestName') || '').trim(),
+      guestPhone: String(formData.get('guestPhone') || '').trim(),
+      partySize: Number(formData.get('partySize')),
+      hasDeposit,
+      depositAmount: hasDeposit ? Number(formData.get('depositAmount') || 0) : 0,
+      remark: String(formData.get('remark') || '').trim()
+    });
+    closeModal();
+  });
+}
+
+async function enqueueReservation(roomId, patch) {
+  const current = getRoomData(state.selectedDate, state.selectedSlot, roomId);
+  const cleanPatch = normalizePatch(patch);
+  const operation = {
+    clientOperationId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    date: state.selectedDate,
+    slot: state.selectedSlot,
+    roomId: Number(roomId),
+    baseVersion: current.version || 0,
+    patch: cleanPatch,
+    createdAt: new Date().toISOString()
+  };
+  const localReservation = {
+    ...current,
+    ...cleanPatch,
+    date: operation.date,
+    slot: operation.slot,
+    roomId: operation.roomId,
+    version: operation.baseVersion,
+    pending: true
+  };
+  await window.bookingDb.removePendingForRoom(operation.date, operation.slot, operation.roomId);
+  await window.bookingDb.addPendingOperation(operation);
+  await window.bookingDb.putCachedReservation(localReservation);
+  state.reservations.set(roomKey(operation.date, operation.slot, operation.roomId), localReservation);
+  await refreshPendingCount();
+  renderRooms();
+  updateSyncStrip();
+  syncPendingOperations();
+}
+
+function normalizePatch(patch) {
+  if (patch.state === STATES.FREE) {
+    return {
+      state: STATES.FREE,
+      guestName: '',
+      guestPhone: '',
+      partySize: null,
+      hasDeposit: false,
+      depositAmount: 0,
+      remark: ''
+    };
+  }
+  return {
+    state: patch.state || STATES.RESERVED,
+    guestName: patch.guestName || '',
+    guestPhone: patch.guestPhone || '',
+    partySize: patch.partySize || null,
+    hasDeposit: Boolean(patch.hasDeposit),
+    depositAmount: patch.hasDeposit ? Number(patch.depositAmount || 0) : 0,
+    remark: patch.remark || ''
+  };
+}
+
+async function syncPendingOperations(showNotice = false) {
+  if (!auth.token || !navigator.onLine) {
+    updateSyncStrip();
+    return;
+  }
+  const operations = await window.bookingDb.getPendingOperations();
+  state.pendingCount = operations.length;
+  if (operations.length === 0) {
+    updateSyncStrip();
+    return;
+  }
+  updateSyncStrip(`正在同步 ${operations.length} 条离线操作...`);
+  try {
+    const result = await api('/api/sync/operations', {
+      method: 'POST',
+      body: { operations }
+    });
+    const appliedIds = new Set(result.applied.map((reservation) => {
+      const op = operations.find((item) =>
+        item.date === reservation.date &&
+        item.slot === reservation.slot &&
+        item.roomId === reservation.roomId
+      );
+      return op && op.clientOperationId;
+    }).filter(Boolean));
+    const conflictIds = new Set((result.conflicts || []).map((conflict) => conflict.clientOperationId));
+    await window.bookingDb.removePendingOperations([...appliedIds, ...conflictIds]);
+    await window.bookingDb.cacheReservations(result.applied || []);
+    setReservations(result.applied || []);
+    await refreshPendingCount();
+    renderRooms();
+    updateSyncStrip();
+    if (result.conflicts && result.conflicts.length > 0) {
+      alert(`有 ${result.conflicts.length} 条操作发生冲突，已交给老板/管理员处理。`);
+    } else if (showNotice) {
+      updateSyncStrip('同步完成');
+    }
+  } catch (_) {
+    updateSyncStrip('同步失败：稍后会自动重试');
+  }
+}
+
+async function refreshPendingCount() {
+  const operations = await window.bookingDb.getPendingOperations();
+  state.pendingCount = operations.length;
+}
+
+function connectSocket() {
+  if (state.socket) state.socket.disconnect();
+  state.socket = io({
+    auth: { token: auth.token },
+    transports: ['websocket', 'polling']
+  });
+  state.socket.on('connect', () => updateSyncStrip());
+  state.socket.on('disconnect', () => updateSyncStrip());
+  state.socket.on('reservation.changed', async ({ reservation }) => {
+    const pending = await window.bookingDb.getPendingOperations();
+    const hasLocalPending = pending.some((operation) =>
+      operation.date === reservation.date &&
+      operation.slot === reservation.slot &&
+      operation.roomId === reservation.roomId
+    );
+    if (hasLocalPending) return;
+    await window.bookingDb.putCachedReservation(reservation);
+    state.reservations.set(roomKey(reservation.date, reservation.slot, reservation.roomId), reservation);
+    if (reservation.date === state.selectedDate) renderRooms();
+  });
+  state.socket.on('reservation.conflict', () => {
+    if (canManage()) updateSyncStrip('有新的同步冲突待处理');
+  });
+}
+
+async function openUsersModal() {
+  openModal('员工管理', '<p class="empty">正在加载...</p>');
+  try {
+    const result = await api('/api/users');
+    renderUsersModal(result.users || []);
+  } catch (err) {
+    els.modalBody.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderUsersModal(users) {
+  els.modalBody.innerHTML = `
+    <form id="createUserForm" class="inline-form">
+      <input name="username" placeholder="账号" required />
+      <input name="displayName" placeholder="姓名" required />
+      <input name="password" type="text" placeholder="密码" minlength="6" required />
+      ${auth.user.role === 'super_admin' ? '<select name="role"><option value="employee">员工</option><option value="boss">老板</option></select>' : ''}
+      <button type="submit" class="btn primary small">创建</button>
+    </form>
+    <div class="list">${users.map(renderUserItem).join('') || '<p class="empty">暂无员工</p>'}</div>
+  `;
+  document.getElementById('createUserForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    try {
+      const result = await api('/api/users', {
+        method: 'POST',
+        body: {
+          username: String(formData.get('username') || '').trim(),
+          displayName: String(formData.get('displayName') || '').trim(),
+          password: String(formData.get('password') || ''),
+          role: String(formData.get('role') || 'employee')
+        }
+      });
+      alert(`账号已创建，密码：${result.password}`);
+      openUsersModal();
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+  els.modalBody.querySelectorAll('[data-reset]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const result = await api(`/api/users/${button.dataset.reset}/reset-password`, { method: 'POST' });
+      alert(`新密码：${result.password}`);
+    });
+  });
+  els.modalBody.querySelectorAll('[data-toggle]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await api(`/api/users/${button.dataset.toggle}`, {
+        method: 'PATCH',
+        body: { active: button.dataset.active !== 'true' }
+      });
+      openUsersModal();
+    });
+  });
+  els.modalBody.querySelectorAll('[data-delete]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const name = button.dataset.name || '该员工';
+      if (!confirm(`确定删除「${name}」账号吗？此操作不可恢复。`)) return;
+      await api(`/api/users/${button.dataset.delete}`, { method: 'DELETE' });
+      openUsersModal();
+    });
+  });
+}
+
+function renderUserItem(user) {
+  return `
+    <div class="list-item">
+      <div>
+        <strong>${escapeHtml(user.displayName)}</strong>
+        <span>${escapeHtml(user.username)} · ${ROLE_LABELS[user.role] || user.role} · ${user.active ? '启用' : '停用'}</span>
+      </div>
+      <div class="row-actions">
+        <button type="button" data-reset="${user.id}">重置</button>
+        <button type="button" data-toggle="${user.id}" data-active="${user.active}">${user.active ? '禁用' : '启用'}</button>
+        ${user.role === 'employee' ? `<button type="button" data-delete="${user.id}" data-name="${escapeAttr(user.displayName)}">删除</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+async function openConflictsModal() {
+  openModal('同步冲突', '<p class="empty">正在加载...</p>');
+  try {
+    const result = await api('/api/conflicts');
+    const conflicts = result.conflicts || [];
+    els.modalBody.innerHTML = conflicts.length
+      ? `<div class="list">${conflicts.map(renderConflictItem).join('')}</div>`
+      : '<p class="empty">暂无冲突</p>';
+    els.modalBody.querySelectorAll('[data-conflict-action]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        await api(`/api/conflicts/${button.dataset.id}/resolve`, {
+          method: 'POST',
+          body: { action: button.dataset.conflictAction }
+        });
+        openConflictsModal();
+        loadReservations();
+      });
+    });
+  } catch (err) {
+    els.modalBody.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderConflictItem(conflict) {
+  const requested = conflict.requested.patch || {};
+  return `
+    <div class="list-item conflict-item">
+      <div>
+        <strong>${conflict.date} ${SLOT_LABELS[conflict.slot]} · ${roomName(conflict.roomId)}</strong>
+        <span>${escapeHtml(conflict.displayName || conflict.username)} 的离线操作与服务器数据冲突</span>
+        <small>想改为：${STATE_LABELS[requested.state] || requested.state} ${requested.guestName || ''} ${requested.partySize ? `· ${requested.partySize}人` : ''}</small>
+      </div>
+      <div class="row-actions">
+        <button type="button" data-id="${conflict.id}" data-conflict-action="keep_server">保留服务器</button>
+        <button type="button" data-id="${conflict.id}" data-conflict-action="overwrite">覆盖</button>
+      </div>
+    </div>
+  `;
+}
+
+async function openStatsModal() {
+  const start = `${state.selectedDate.slice(0, 8)}01`;
+  openModal('简单统计', `
+    <form id="statsForm" class="inline-form">
+      <input type="date" name="startDate" value="${start}" />
+      <input type="date" name="endDate" value="${state.selectedDate}" />
+      <button type="submit" class="btn primary small">查询</button>
+    </form>
+    <div id="statsResult"><p class="empty">正在加载...</p></div>
+  `);
+  const form = document.getElementById('statsForm');
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    loadStats(new FormData(form));
+  });
+  await loadStats(new FormData(form));
+}
+
+async function loadStats(formData) {
+  const target = document.getElementById('statsResult');
+  const startDate = formData.get('startDate');
+  const endDate = formData.get('endDate');
+  try {
+    const result = await api(`/api/stats/summary?startDate=${startDate}&endDate=${endDate}`);
+    const stats = result.stats;
+    target.innerHTML = `
+      <div class="stats-grid">
+        <div><strong>${stats.reservedCount}</strong><span>预订</span></div>
+        <div><strong>${stats.diningCount}</strong><span>就餐</span></div>
+        <div><strong>${stats.cancelCount}</strong><span>取消/空闲</span></div>
+      </div>
+      <h3>热门房间</h3>
+      <div class="mini-list">${stats.popularRooms.map((item) => `<p>${escapeHtml(item.roomName)}：${item.count} 次</p>`).join('') || '<p>暂无</p>'}</div>
+      <h3>操作明细</h3>
+      <div class="mini-list">${stats.operations.map(renderOperationLine).join('') || '<p>暂无</p>'}</div>
+    `;
+  } catch (err) {
+    target.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderOperationLine(item) {
+  const actor = `${item.displayName || '未知姓名'}（${item.username || '未知账号'}）`;
+  const guest = item.guestName ? ` · ${item.guestName}` : '';
+  const party = item.partySize ? ` · ${item.partySize}人` : '';
+  const deposit = item.hasDeposit ? ` · 订金${money(item.depositAmount)}元` : '';
+  return `<p>${formatDateTime(item.createdAt)} · ${SLOT_LABELS[item.slot] || item.slot} · ${escapeHtml(actor)} · ${escapeHtml(ACTION_LABELS[item.action] || item.action)} · ${escapeHtml(item.roomName)}${escapeHtml(guest + party + deposit)}</p>`;
 }
 
 function getRoomData(date, slot, roomId) {
-  const day = reservations[date];
-  if (!day) return { state: STATES.FREE };
-  const slotData = day[slot];
-  if (!slotData) return { state: STATES.FREE };
-  const room = slotData[String(roomId)];
-  if (!room) return { state: STATES.FREE };
-  return { state: room.state || STATES.FREE, guestName: room.guestName, guestPhone: room.guestPhone, remark: room.remark || '' };
-}
-
-function setRoomData(date, slot, roomId, data) {
-  if (!reservations[date]) reservations[date] = {};
-  if (!reservations[date][slot]) reservations[date][slot] = {};
-  if (data.state === STATES.FREE && !data.guestName && !data.guestPhone) {
-    delete reservations[date][slot][String(roomId)];
-    if (Object.keys(reservations[date][slot]).length === 0) delete reservations[date][slot];
-    if (Object.keys(reservations[date]).length === 0) delete reservations[date];
-  } else {
-    reservations[date][slot][String(roomId)] = data;
-  }
-  // 写入数据库
-  saveReservation({
+  return state.reservations.get(roomKey(date, slot, roomId)) || {
     date,
     slot,
-    roomId,
-    state: data.state,
-    guestName: data.guestName,
-    guestPhone: data.guestPhone,
-    remark: data.remark || ''
-  }).catch((err) => console.error('保存预定失败', err));
+    roomId: Number(roomId),
+    state: STATES.FREE,
+    guestName: '',
+    guestPhone: '',
+    partySize: null,
+    hasDeposit: false,
+    depositAmount: 0,
+    remark: '',
+    version: 0
+  };
 }
 
-// UI 状态
-let selectedDate = todayStr();
-let selectedSlot = SLOTS.NOON;
-let pendingReserveRoomId = null;
-
-const dateInput = document.getElementById('dateInput');
-const modalOverlay = document.getElementById('modalOverlay');
-const modalRoomName = document.getElementById('modalRoomName');
-const reserveForm = document.getElementById('reserveForm');
-const guestNameInput = document.getElementById('guestName');
-const guestPhoneInput = document.getElementById('guestPhone');
-const modalCancel = document.getElementById('modalCancel');
-
-function initControls() {
-  dateInput.value = selectedDate;
-  dateInput.addEventListener('change', () => {
-    selectedDate = dateInput.value;
-    render();
-  });
-
-  document.querySelectorAll('.slot-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      selectedSlot = tab.dataset.slot;
-      document.querySelectorAll('.slot-tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      render();
-    });
-  });
+function roomKey(date, slot, roomId) {
+  return `${date}|${slot}|${roomId}`;
 }
 
-function openReserveModal(room) {
-  pendingReserveRoomId = room.id;
-  modalRoomName.textContent = `预定「${room.name}」· ${selectedDate} ${SLOT_LABELS[selectedSlot]}`;
-  guestNameInput.value = '';
-  guestPhoneInput.value = '';
-  modalOverlay.setAttribute('aria-hidden', 'false');
-  modalOverlay.classList.add('open');
-  guestNameInput.focus();
+function roomName(roomId) {
+  const room = state.rooms.find((item) => item.id === Number(roomId));
+  return room ? room.name : String(roomId);
 }
 
-function closeModal() {
-  pendingReserveRoomId = null;
-  modalOverlay.setAttribute('aria-hidden', 'true');
-  modalOverlay.classList.remove('open');
-}
-
-reserveForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  const name = guestNameInput.value.trim();
-  const phone = guestPhoneInput.value.trim();
-  if (!name || !phone) return;
-  if (pendingReserveRoomId == null) return;
-  const room = ROOM_CONFIG.find(r => r.id === pendingReserveRoomId);
-  setRoomData(selectedDate, selectedSlot, pendingReserveRoomId, {
-    state: STATES.RESERVED,
-    guestName: name,
-    guestPhone: phone
-  });
-  // 预定时写入历史表（只增不删），就餐完变空闲后仍可查到哪天谁预定了哪间
-  addReservationHistory({
-    date: selectedDate,
-    slot: selectedSlot,
-    roomId: pendingReserveRoomId,
-    roomName: room ? room.name : '',
-    guestName: name,
-    guestPhone: phone,
-    remark: ''
-  }).catch((err) => console.error('写入预定历史失败', err));
-  closeModal();
-  render();
-});
-
-modalCancel.addEventListener('click', closeModal);
-modalOverlay.addEventListener('click', (e) => {
-  if (e.target === modalOverlay) closeModal();
-});
-
-// ---------- 备注弹窗 ----------
-const remarkOverlay = document.getElementById('remarkOverlay');
-const remarkRoomName = document.getElementById('remarkRoomName');
-const remarkInput = document.getElementById('remarkInput');
-const remarkForm = document.getElementById('remarkForm');
-const remarkCancel = document.getElementById('remarkCancel');
-let pendingRemarkRoomId = null;
-
-function openRemarkModal(room) {
-  const data = getRoomData(selectedDate, selectedSlot, room.id);
-  pendingRemarkRoomId = room.id;
-  remarkRoomName.textContent = `${room.name} · ${selectedDate} ${SLOT_LABELS[selectedSlot]}`;
-  remarkInput.value = data.remark || '';
-  remarkOverlay.setAttribute('aria-hidden', 'false');
-  remarkOverlay.classList.add('open');
-  remarkInput.focus();
-}
-
-function closeRemarkModal() {
-  pendingRemarkRoomId = null;
-  remarkOverlay.setAttribute('aria-hidden', 'true');
-  remarkOverlay.classList.remove('open');
-}
-
-remarkForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  const roomId = pendingRemarkRoomId;
-  if (roomId == null) return;
-  const room = ROOM_CONFIG.find(r => r.id === roomId);
-  const data = getRoomData(selectedDate, selectedSlot, roomId);
-  const text = remarkInput.value.trim();
-  setRoomData(selectedDate, selectedSlot, roomId, {
-    state: data.state,
-    guestName: data.guestName,
-    guestPhone: data.guestPhone,
-    remark: text
-  });
-  updateHistoryRemark(selectedDate, selectedSlot, roomId, text).catch(() => {});
-  closeRemarkModal();
-  render();
-});
-
-remarkCancel.addEventListener('click', closeRemarkModal);
-remarkOverlay.addEventListener('click', (e) => {
-  if (e.target === remarkOverlay) closeRemarkModal();
-});
-
-// ---------- 编辑预定人弹窗 ----------
-const editGuestOverlay = document.getElementById('editGuestOverlay');
-const editGuestRoomName = document.getElementById('editGuestRoomName');
-const editGuestNameInput = document.getElementById('editGuestName');
-const editGuestPhoneInput = document.getElementById('editGuestPhone');
-const editGuestForm = document.getElementById('editGuestForm');
-const editGuestCancel = document.getElementById('editGuestCancel');
-let pendingEditRoomId = null;
-
-function openEditGuestModal(room) {
-  const data = getRoomData(selectedDate, selectedSlot, room.id);
-  pendingEditRoomId = room.id;
-  editGuestRoomName.textContent = `${room.name} · ${selectedDate} ${SLOT_LABELS[selectedSlot]}`;
-  editGuestNameInput.value = data.guestName || '';
-  editGuestPhoneInput.value = data.guestPhone || '';
-  editGuestOverlay.setAttribute('aria-hidden', 'false');
-  editGuestOverlay.classList.add('open');
-  editGuestNameInput.focus();
-}
-
-function closeEditGuestModal() {
-  pendingEditRoomId = null;
-  editGuestOverlay.setAttribute('aria-hidden', 'true');
-  editGuestOverlay.classList.remove('open');
-}
-
-editGuestForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  const roomId = pendingEditRoomId;
-  if (roomId == null) return;
-  const data = getRoomData(selectedDate, selectedSlot, roomId);
-  const name = editGuestNameInput.value.trim();
-  const phone = editGuestPhoneInput.value.trim();
-  if (!name || !phone) return;
-  setRoomData(selectedDate, selectedSlot, roomId, {
-    state: data.state,
-    guestName: name,
-    guestPhone: phone,
-    remark: data.remark
-  });
-  closeEditGuestModal();
-  render();
-});
-
-editGuestCancel.addEventListener('click', closeEditGuestModal);
-editGuestOverlay.addEventListener('click', (e) => {
-  if (e.target === editGuestOverlay) closeEditGuestModal();
-});
-
-// ---------- 历史预定记录 ----------
-const historyOverlay = document.getElementById('historyOverlay');
-const historyList = document.getElementById('historyList');
-const historyEmpty = document.getElementById('historyEmpty');
-const historyStartDate = document.getElementById('historyStartDate');
-const historyEndDate = document.getElementById('historyEndDate');
-
-/** 从预定历史表按日期范围查询（包含已变为空闲的记录：哪天预定了哪间、预定人信息） */
-function getHistoryRecordsFromDB(startDate, endDate) {
-  return getHistoryByDateRange(startDate || null, endDate || null).then((rows) => {
-    const list = rows.map((r) => ({
-      date: r.date,
-      slot: r.slot,
-      roomId: r.roomId,
-      roomName: r.roomName || String(r.roomId),
-      guestName: r.guestName || '—',
-      guestPhone: r.guestPhone || '—',
-      remark: r.remark || '',
-      state: 'reserved' // 历史里统一显示为“已预定”
-    }));
-    list.sort((a, b) => {
-      if (a.date !== b.date) return b.date.localeCompare(a.date);
-      if (a.slot !== b.slot) return a.slot === SLOTS.NOON ? 1 : -1;
-      return a.roomId - b.roomId;
-    });
-    return list;
-  });
-}
-
-function openHistoryModal() {
-  const t = new Date();
-  const endStr = todayStr();
-  const startStr = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-01';
-  historyStartDate.value = startStr;
-  historyEndDate.value = endStr;
-  historyOverlay.setAttribute('aria-hidden', 'false');
-  historyOverlay.classList.add('open');
-  renderHistoryList([]);
-  getHistoryRecordsFromDB(startStr, endStr).then((records) => renderHistoryList(records));
-}
-
-function closeHistoryModal() {
-  historyOverlay.setAttribute('aria-hidden', 'true');
-  historyOverlay.classList.remove('open');
-}
-
-function renderHistoryList(records) {
-  historyList.innerHTML = '';
-  historyEmpty.hidden = records.length > 0;
-  records.forEach(r => {
-    const li = document.createElement('li');
-    li.className = `history-item state-${r.state}`;
-    const remarkBlock = r.remark
-      ? `<div class="history-item-remark">备注：${escapeHtml(r.remark)}</div>`
-      : '';
-    li.innerHTML = `
-      <div class="history-item-head">
-        <span class="history-date">${r.date}</span>
-        <span class="history-slot">${SLOT_LABELS[r.slot]}</span>
-        <span class="history-state-badge">${STATE_LABELS[r.state]}</span>
-      </div>
-      <div class="history-item-body">
-        <span class="history-room">${r.roomName}</span>
-        <span class="history-guest">${r.guestName} · ${r.guestPhone}</span>
-      </div>
-      ${remarkBlock}
-    `;
-    historyList.appendChild(li);
-  });
-}
-
-document.getElementById('btnHistory').addEventListener('click', openHistoryModal);
-document.getElementById('btnCloseHistory').addEventListener('click', closeHistoryModal);
-historyOverlay.addEventListener('click', (e) => {
-  if (e.target === historyOverlay) closeHistoryModal();
-});
-
-document.getElementById('btnHistoryQuery').addEventListener('click', () => {
-  const start = historyStartDate.value || null;
-  const end = historyEndDate.value || null;
-  renderHistoryList([]);
-  getHistoryRecordsFromDB(start, end).then((records) => renderHistoryList(records));
-});
-
-document.getElementById('btnClearDb').addEventListener('click', () => {
-  if (!confirm('确定清空所有预定数据与历史记录吗？此操作不可恢复。')) return;
-  clearAllData()
-    .then(() => {
-      reservations = {};
-      render();
-      if (historyOverlay.classList.contains('open')) {
-        renderHistoryList([]);
-      }
-    })
-    .catch((err) => console.error('清空失败', err));
-});
-
-function handleRoomClick(room) {
-  const data = getRoomData(selectedDate, selectedSlot, room.id);
-  if (data.state === STATES.FREE) {
-    openReserveModal(room);
-    return;
-  }
-  if (data.state === STATES.RESERVED) {
-    setRoomData(selectedDate, selectedSlot, room.id, {
-      state: STATES.DINING,
-      guestName: data.guestName,
-      guestPhone: data.guestPhone,
-      remark: data.remark
-    });
-    render();
-    return;
-  }
-  if (data.state === STATES.DINING) {
-    if (!confirm(`确定将「${room.name}」设为空闲吗？`)) return;
-    setRoomData(selectedDate, selectedSlot, room.id, { state: STATES.FREE });
-    render();
-  }
-}
-
-function renderRoom(room) {
-  const data = getRoomData(selectedDate, selectedSlot, room.id);
-  const card = document.createElement('div');
-  card.className = `room-card state-${data.state}`;
-  card.dataset.id = room.id;
-  const guestHtml = (data.guestName || data.guestPhone)
-    ? `<div class="room-guest">${data.guestName || '—'}<br><span class="room-phone">${data.guestPhone || '—'}</span></div>`
-    : '';
-  const isReserved = data.state === STATES.RESERVED;
-  const isOccupied = data.state === STATES.RESERVED || data.state === STATES.DINING;
-  const actionsHtml = isOccupied
-    ? `<div class="room-actions-row">
-        ${isReserved ? `<button type="button" class="room-btn room-cancel-btn" data-id="${room.id}">取消预定</button>` : ''}
-        <button type="button" class="room-btn room-edit-btn" data-id="${room.id}">编辑</button>
-        <button type="button" class="room-btn room-remark-btn" data-id="${room.id}">备注</button>
-      </div>`
-    : '';
-  const remarkTextHtml = isOccupied && data.remark
-    ? `<div class="room-remark-text">${escapeHtml(data.remark)}</div>`
-    : '';
-  card.innerHTML = `
-    <div class="room-name">${room.name}</div>
-    <div class="room-capacity">推荐 ${room.recommended} 人</div>
-    ${guestHtml}
-    ${remarkTextHtml}
-    ${actionsHtml}
-    <div class="room-state">${STATE_LABELS[data.state]}</div>
-  `;
-  return card;
-}
-
-function escapeHtml(s) {
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
-}
-
-function render() {
-  const grid = document.getElementById('roomsGrid');
-  grid.innerHTML = '';
-  ROOM_CONFIG.forEach(room => {
-    grid.appendChild(renderRoom(room));
-  });
-  grid.querySelectorAll('.room-card').forEach(el => {
-    const id = parseInt(el.dataset.id, 10);
-    const room = ROOM_CONFIG.find(r => r.id === id);
-    if (room) {
-      el.addEventListener('click', () => handleRoomClick(room));
-      el.querySelectorAll('.room-cancel-btn').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          if (!confirm(`确定取消「${room.name}」的预定吗？`)) return;
-          setRoomData(selectedDate, selectedSlot, room.id, { state: STATES.FREE });
-          deleteHistoryRecord(selectedDate, selectedSlot, room.id).catch(() => {});
-          render();
-        });
-      });
-      el.querySelectorAll('.room-edit-btn').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          openEditGuestModal(room);
-        });
-      });
-      el.querySelectorAll('.room-remark-btn').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          openRemarkModal(room);
-        });
-      });
+async function api(url, options = {}) {
+  return fetchJson(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${auth.token}`
     }
   });
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-  try {
-    await openDB();
-    await migrateFromLocalStorage();
-    reservations = await getAllReservations();
-  } catch (err) {
-    console.error('数据库加载失败', err);
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || '请求失败');
+  return data;
+}
+
+function canManage() {
+  return auth.user && ['boss', 'super_admin'].includes(auth.user.role);
+}
+
+function updateSyncStrip(message) {
+  if (message) {
+    els.syncStrip.textContent = message;
+    return;
   }
-  initControls();
-  render();
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+  const socketOnline = state.socket && state.socket.connected;
+  if (!navigator.onLine) {
+    els.syncStrip.textContent = `离线：${state.pendingCount} 条待同步`;
+  } else if (state.pendingCount > 0) {
+    els.syncStrip.textContent = `在线：${state.pendingCount} 条待同步`;
+  } else {
+    els.syncStrip.textContent = socketOnline ? '在线：实时同步中' : '在线：正在连接实时同步';
   }
-});
+}
+
+function openModal(title, html) {
+  els.modalTitle.textContent = title;
+  els.modalBody.innerHTML = html;
+  els.modalOverlay.classList.add('open');
+  els.modalOverlay.setAttribute('aria-hidden', 'false');
+}
+
+function closeModal() {
+  els.modalOverlay.classList.remove('open');
+  els.modalOverlay.setAttribute('aria-hidden', 'true');
+  els.modalBody.innerHTML = '';
+}
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function money(value) {
+  return Number(value || 0).toFixed(2).replace(/\.00$/, '');
+}
+
+function formatDateTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ').slice(0, 19);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function escapeHtml(value) {
+  const div = document.createElement('div');
+  div.textContent = String(value == null ? '' : value);
+  return div.innerHTML;
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replaceAll('"', '&quot;');
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}

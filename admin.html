@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>订桌系统超级管理员</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="admin-body">
+  <section class="admin-login" id="adminLogin">
+    <div class="login-panel">
+      <h1>超级管理员</h1>
+      <p>老街坊劈柴院订桌系统</p>
+      <form id="adminLoginForm" class="form-stack">
+        <label>账号<input type="text" id="adminUsername" autocomplete="username" required /></label>
+        <label>密码<input type="password" id="adminPassword" autocomplete="current-password" required /></label>
+        <button type="submit" class="btn primary">登录</button>
+      </form>
+      <p class="login-error" id="adminError"></p>
+    </div>
+  </section>
+
+  <main class="admin-shell" id="adminShell" hidden>
+    <header class="admin-header">
+      <div>
+        <h1>订桌系统后台</h1>
+        <p id="adminUserLine"></p>
+      </div>
+      <button type="button" class="btn small" id="adminLogout">退出</button>
+    </header>
+
+    <nav class="admin-tabs">
+      <button type="button" class="active" data-panel="usersPanel">账号</button>
+      <button type="button" data-panel="conflictsPanel">冲突</button>
+      <button type="button" data-panel="statsPanel">统计</button>
+      <button type="button" data-panel="reservationsPanel">订桌</button>
+    </nav>
+
+    <section class="admin-panel active" id="usersPanel">
+      <div class="panel-head">
+        <h2>账号管理</h2>
+        <button type="button" class="btn primary small" id="refreshUsers">刷新</button>
+      </div>
+      <form id="adminCreateUserForm" class="admin-form-row">
+        <input name="username" placeholder="账号" required />
+        <input name="displayName" placeholder="姓名" required />
+        <input name="password" type="text" placeholder="密码" minlength="6" required />
+        <select name="role">
+          <option value="employee">员工</option>
+          <option value="boss">老板</option>
+        </select>
+        <button type="submit" class="btn primary small">创建账号</button>
+      </form>
+      <div id="adminEditUserPanel"></div>
+      <div id="adminUsersList" class="table-list"></div>
+    </section>
+
+    <section class="admin-panel" id="conflictsPanel">
+      <div class="panel-head">
+        <h2>同步冲突</h2>
+        <button type="button" class="btn primary small" id="refreshConflicts">刷新</button>
+      </div>
+      <div id="adminConflictsList" class="table-list"></div>
+    </section>
+
+    <section class="admin-panel" id="statsPanel">
+      <div class="panel-head"><h2>简单统计</h2></div>
+      <form id="adminStatsForm" class="admin-form-row">
+        <input type="date" name="startDate" id="adminStatsStart" required />
+        <input type="date" name="endDate" id="adminStatsEnd" required />
+        <button type="submit" class="btn primary small">查询</button>
+      </form>
+      <div id="adminStatsResult"></div>
+    </section>
+
+    <section class="admin-panel" id="reservationsPanel">
+      <div class="panel-head"><h2>当前订桌</h2></div>
+      <form id="adminReservationForm" class="admin-form-row">
+        <input type="date" name="date" id="adminReservationDate" required />
+        <button type="submit" class="btn primary small">查询</button>
+      </form>
+      <div id="adminReservationsList" class="table-list"></div>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/admin.js"></script>
+</body>
+</html>

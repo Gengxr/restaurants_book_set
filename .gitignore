@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+data/
+backups/
+
+android-apk/.gradle/
+android-apk/build/
+android-apk/app/build/
+android-apk/local.properties
+android-apk/signing.properties
+android-apk/keystore/
+
+release-apk/*signing*.txt
+release-apk/*.apk
+
+25183692_www.gxr123.cn_nginx/

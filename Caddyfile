@@ -1,0 +1,4 @@
+gxr123.cn {
+  encode gzip zstd
+  reverse_proxy app:3000
+}

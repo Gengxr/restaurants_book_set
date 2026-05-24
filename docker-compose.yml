@@ -1,0 +1,32 @@
+version: "3.3"
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DATABASE_PATH: /app/data/booking.sqlite
+      BACKUP_DIR: /app/backups
+      BACKUP_HOUR: 3
+      JWT_SECRET: ${JWT_SECRET}
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
