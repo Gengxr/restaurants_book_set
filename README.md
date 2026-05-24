@@ -20,7 +20,6 @@
 - 后端：Node.js ESM、Express、Socket.IO、`node:sqlite`、bcrypt。
 - 数据库：SQLite。
 - 部署：Node.js + systemd + Nginx + HTTPS 证书。
-- APK：Android Java WebView，加载线上地址 `https://www.gxr123.cn/`。
 
 ## 目录结构
 
@@ -76,16 +75,6 @@ npm test
 
 当前版本不再强制首次登录修改密码。老板或超级管理员创建员工账号时必须主动设置密码；超级管理员后台可以查看和修改系统已保存的账号密码。旧版本中已经存在但未保存明文密码的账号，需要重新设置密码后才会显示。
 
-## 部署
-
-当前线上服务使用直部署方式：
-
-- 线上地址：`https://www.gxr123.cn/`
-- 管理后台：`https://www.gxr123.cn/admin`
-- 应用目录：`/opt/booking-app`
-- 进程管理：`systemd` 服务 `booking-app`
-- 反向代理：Nginx
-- 数据库：`/opt/booking-app/data/booking.sqlite`
 
 更新发布通常执行：
 
@@ -97,15 +86,6 @@ systemctl restart booking-app
 
 更完整的服务器命令和证书说明见 `部署文档.md`。
 
-## Android APK
-
-`android-apk/` 是正式 APK 的源码工程。APK 本身不内置业务代码和密码，启动后用 WebView 加载线上手机端：
-
-```text
-https://www.gxr123.cn/
-```
-
-因此服务器端更新业务功能后，手机端通常无需重新安装 APK；只有修改应用图标、包名、权限、原生 WebView 配置或加载域名时才需要重新打包。
 
 构建 debug 包：
 
@@ -114,10 +94,3 @@ cd android-apk
 gradle assembleDebug
 ```
 
-构建正式包需要本地 `android-apk/signing.properties` 和 `android-apk/keystore/`，这些文件包含签名敏感信息，已被 `.gitignore` 排除。
-
-## 安全说明
-
-- 不要提交服务器 SSH 密码、证书私钥、release keystore、签名密码或数据库文件。
-- `.env.example` 只提供环境变量示例，生产环境请使用强随机 `JWT_SECRET`。
-- `release-apk/` 下的 APK 和签名说明文件不进入 Git 仓库。
